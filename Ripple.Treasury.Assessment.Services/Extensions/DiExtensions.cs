@@ -5,7 +5,7 @@ namespace Ripple.Treasury.Assessment.Services.Extensions;
 
 public static class DiExtensions
 {
-    public static void AddServices(this IServiceCollection services)
+    public static void RegisterServices(this IServiceCollection services)
     {
         services.AddScoped<IEventService, EventService>();
         services.AddScoped<ITicketPurchaseService, TicketPurchaseService>();

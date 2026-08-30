@@ -26,6 +26,7 @@
     </ItemGroup>
 
     <ItemGroup>
+        <ProjectReference Include="..\Ripple.Treasury.Assessment.Api\Ripple.Treasury.Assessment.Api.csproj" />
         <ProjectReference Include="..\Ripple.Treasury.Assessment.Services\Ripple.Treasury.Assessment.Services.csproj" />
     </ItemGroup>
 

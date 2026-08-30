@@ -2,7 +2,7 @@ using Ripple.Treasury.Assessment.Services;
 using Ripple.Treasury.Assessment.Services.Exceptions;
 using Ripple.Treasury.Assessment.Services.Inputs;
 
-namespace Ripple.Treasury.Assessment.UnitTests;
+namespace Ripple.Treasury.Assessment.UnitTests.Services;
 
 public class EventServiceCapacityTests
 {
@@ -10,7 +10,7 @@ public class EventServiceCapacityTests
 
     private static List<PricingTierInput> Tiers(params int[] allocations)
     {
-        List<PricingTierInput> tiers = new List<PricingTierInput>();
+        List<PricingTierInput> tiers = [];
         int index = 0;
 
         foreach (int allocation in allocations)
@@ -100,6 +100,42 @@ public class EventServiceCapacityTests
 
         Assert.Contains("VIP", error.Message);
         Assert.Contains("cannot be removed", error.Message);
+    }
+
+    [Fact]
+    public void Tiers_sharing_one_currency_are_accepted()
+    {
+        EventService.ValidateSingleCurrency(EventId, Tiers(60, 40));
+    }
+
+    [Fact]
+    public void An_event_with_no_tiers_has_no_currency_to_disagree_on()
+    {
+        EventService.ValidateSingleCurrency(EventId, Tiers());
+    }
+
+    [Fact]
+    public void Tiers_in_different_currencies_are_rejected()
+    {
+        List<PricingTierInput> tiers = Tiers(60, 40);
+        tiers[1].PriceCurrency = "EUR";
+
+        CapacityViolationException error = Assert.Throws<CapacityViolationException>(
+            () => EventService.ValidateSingleCurrency(EventId, tiers));
+
+        Assert.Contains("USD", error.Message);
+        Assert.Contains("EUR", error.Message);
+        Assert.Equal(EventId, error.EventId);
+    }
+
+    [Fact]
+    public void The_mismatch_is_caught_wherever_it_appears()
+    {
+        List<PricingTierInput> tiers = Tiers(50, 30, 20);
+        tiers[2].PriceCurrency = "GBP";
+
+        Assert.Throws<CapacityViolationException>(
+            () => EventService.ValidateSingleCurrency(EventId, tiers));
     }
 
     [Fact]

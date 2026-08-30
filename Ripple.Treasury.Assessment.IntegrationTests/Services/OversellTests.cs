@@ -5,12 +5,24 @@ using Microsoft.EntityFrameworkCore;
 using Ripple.Treasury.Assessment.Infrastructure;
 using Ripple.Treasury.Assessment.Infrastructure.Entities;
 using Ripple.Treasury.Assessment.Infrastructure.Enums;
+using Ripple.Treasury.Assessment.IntegrationTests.Fixtures;
 
-namespace Ripple.Treasury.Assessment.IntegrationTests;
+namespace Ripple.Treasury.Assessment.IntegrationTests.Services;
 
 [Collection(IntegrationCollection.Name)]
-public class OversellTests(PostgresFixture fixture)
+public class OversellTests(PostgresFixture fixture) : IAsyncLifetime
 {
+    // xUnit builds the class once per test, so every test starts on an empty schema.
+    public async Task InitializeAsync()
+    {
+        await fixture.ResetAsync();
+    }
+
+    public Task DisposeAsync()
+    {
+        return Task.CompletedTask;
+    }
+
     private const int Capacity = 100;
     private const int Buyers = 200;
     private const decimal Price = 50.0000m;
@@ -18,8 +30,6 @@ public class OversellTests(PostgresFixture fixture)
     [Fact]
     public async Task Two_hundred_concurrent_buyers_cannot_oversell_a_hundred_seats()
     {
-        await fixture.ResetAsync();
-
         Guid eventId = Guid.CreateVersion7();
         Guid tierId = Guid.CreateVersion7();
         await SeedAsync(eventId, tierId);

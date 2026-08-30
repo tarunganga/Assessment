@@ -1,20 +1,25 @@
 using Microsoft.EntityFrameworkCore;
 using Ripple.Treasury.Assessment.Infrastructure;
 using Ripple.Treasury.Assessment.Infrastructure.Enums;
+using Ripple.Treasury.Assessment.IntegrationTests.Fixtures;
 using Ripple.Treasury.Assessment.Services;
 using Ripple.Treasury.Assessment.Services.Inputs;
 using Ripple.Treasury.Assessment.Services.Exceptions;
 
-namespace Ripple.Treasury.Assessment.IntegrationTests;
+namespace Ripple.Treasury.Assessment.IntegrationTests.Services;
 
 [Collection(IntegrationCollection.Name)]
-public class TicketPurchaseServiceTests
+public class TicketPurchaseServiceTests(PostgresFixture fixture) : IAsyncLifetime
 {
-    private readonly PostgresFixture _fixture;
-
-    public TicketPurchaseServiceTests(PostgresFixture fixture)
+    // xUnit builds the class once per test, so every test starts on an empty schema.
+    public async Task InitializeAsync()
     {
-        _fixture = fixture;
+        await fixture.ResetAsync();
+    }
+
+    public Task DisposeAsync()
+    {
+        return Task.CompletedTask;
     }
 
     private TicketPurchaseService NewService(TicketingDbContext db)
@@ -24,7 +29,7 @@ public class TicketPurchaseServiceTests
 
     private async Task<(Guid EventId, Guid Ga, Guid Vip)> PublishedEventAsync(int ga = 10, int vip = 5)
     {
-        await using TicketingDbContext db = _fixture.CreateDbContext();
+        await using TicketingDbContext db = fixture.CreateDbContext();
         EventService events = new(db);
 
         Guid eventId = await events.CreateAsync(new CreateEventInput
@@ -42,7 +47,7 @@ public class TicketPurchaseServiceTests
 
         await events.PublishAsync(eventId, default);
 
-        await using TicketingDbContext read = _fixture.CreateDbContext();
+        await using TicketingDbContext read = fixture.CreateDbContext();
         Guid gaId = (await read.PricingTiers.SingleAsync(t => t.EventId == eventId && t.Name == "GA")).Id;
         Guid vipId = (await read.PricingTiers.SingleAsync(t => t.EventId == eventId && t.Name == "VIP")).Id;
         return (eventId, gaId, vipId);
@@ -68,16 +73,15 @@ public class TicketPurchaseServiceTests
     [Fact]
     public async Task Purchase_prices_from_the_tier_and_claims_the_tickets()
     {
-        await _fixture.ResetAsync();
         (Guid eventId, Guid ga, Guid vip) = await PublishedEventAsync();
 
-        await using TicketingDbContext db = _fixture.CreateDbContext();
+        await using TicketingDbContext db = fixture.CreateDbContext();
         PurchaseResult result = await NewService(db).PurchaseAsync(
             Buy(eventId, "key-1", (ga, 2), (vip, 1)), default);
 
         Assert.False(result.IsReplay);
 
-        await using TicketingDbContext check = _fixture.CreateDbContext();
+        await using TicketingDbContext check = fixture.CreateDbContext();
 
         // Priced from the tier, and asserted against what was actually persisted.
         Infrastructure.Entities.Purchase persisted =
@@ -95,22 +99,21 @@ public class TicketPurchaseServiceTests
     [Fact]
     public async Task Repricing_a_tier_does_not_move_historical_revenue()
     {
-        await _fixture.ResetAsync();
         (Guid eventId, Guid ga, _) = await PublishedEventAsync();
 
-        await using (TicketingDbContext db = _fixture.CreateDbContext())
+        await using (TicketingDbContext db = fixture.CreateDbContext())
         {
             await NewService(db).PurchaseAsync(Buy(eventId, "key-1", (ga, 2)), default);
         }
 
-        await using (TicketingDbContext reprice = _fixture.CreateDbContext())
+        await using (TicketingDbContext reprice = fixture.CreateDbContext())
         {
             Infrastructure.Entities.PricingTier tier = await reprice.PricingTiers.SingleAsync(t => t.Id == ga);
             tier.PriceAmount = 999.00m;
             await reprice.SaveChangesAsync();
         }
 
-        await using TicketingDbContext check = _fixture.CreateDbContext();
+        await using TicketingDbContext check = fixture.CreateDbContext();
         Assert.Equal(50.00m, (await check.PurchaseItems.SingleAsync()).UnitPrice);
         Assert.Equal(100.00m, (await check.Purchases.SingleAsync()).TotalAmount);
     }
@@ -118,10 +121,9 @@ public class TicketPurchaseServiceTests
     [Fact]
     public async Task Same_key_and_same_body_replays_instead_of_buying_twice()
     {
-        await _fixture.ResetAsync();
         (Guid eventId, Guid ga, _) = await PublishedEventAsync();
 
-        await using TicketingDbContext db = _fixture.CreateDbContext();
+        await using TicketingDbContext db = fixture.CreateDbContext();
         TicketPurchaseService service = NewService(db);
 
         PurchaseResult first = await service.PurchaseAsync(Buy(eventId, "key-1", (ga, 2)), default);
@@ -131,7 +133,7 @@ public class TicketPurchaseServiceTests
         Assert.True(second.IsReplay);
         Assert.Equal(first.PurchaseId, second.PurchaseId);
 
-        await using TicketingDbContext check = _fixture.CreateDbContext();
+        await using TicketingDbContext check = fixture.CreateDbContext();
         Assert.Equal(1, await check.Purchases.CountAsync());
         Assert.Equal(2, await check.Tickets.CountAsync(t => t.Status == TicketStatus.Sold));
     }
@@ -139,10 +141,9 @@ public class TicketPurchaseServiceTests
     [Fact]
     public async Task Same_key_with_a_different_body_is_a_conflict()
     {
-        await _fixture.ResetAsync();
         (Guid eventId, Guid ga, _) = await PublishedEventAsync();
 
-        await using TicketingDbContext db = _fixture.CreateDbContext();
+        await using TicketingDbContext db = fixture.CreateDbContext();
         TicketPurchaseService service = NewService(db);
 
         await service.PurchaseAsync(Buy(eventId, "key-1", (ga, 2)), default);
@@ -150,7 +151,7 @@ public class TicketPurchaseServiceTests
         await Assert.ThrowsAsync<IdempotencyKeyConflictException>(
             () => service.PurchaseAsync(Buy(eventId, "key-1", (ga, 5)), default));
 
-        await using TicketingDbContext check = _fixture.CreateDbContext();
+        await using TicketingDbContext check = fixture.CreateDbContext();
         Assert.Equal(1, await check.Purchases.CountAsync());
         Assert.Equal(2, await check.Tickets.CountAsync(t => t.Status == TicketStatus.Sold));
     }
@@ -158,7 +159,6 @@ public class TicketPurchaseServiceTests
     [Fact]
     public async Task Twenty_concurrent_identical_requests_produce_one_purchase()
     {
-        await _fixture.ResetAsync();
         (Guid eventId, Guid ga, _) = await PublishedEventAsync();
 
         TaskCompletionSource start = new(
@@ -170,7 +170,7 @@ public class TicketPurchaseServiceTests
         {
             callers.Add(Task.Run(async () =>
             {
-                await using TicketingDbContext db = _fixture.CreateDbContext();
+                await using TicketingDbContext db = fixture.CreateDbContext();
                 await start.Task;
                 return await NewService(db).PurchaseAsync(Buy(eventId, "same-key", (ga, 2)), default);
             }));
@@ -183,7 +183,7 @@ public class TicketPurchaseServiceTests
         Assert.Equal(19, results.Count(r => r.IsReplay));
         Assert.Single(results.Select(r => r.PurchaseId).Distinct());
 
-        await using TicketingDbContext check = _fixture.CreateDbContext();
+        await using TicketingDbContext check = fixture.CreateDbContext();
         Assert.Equal(1, await check.Purchases.CountAsync());
         Assert.Equal(2, await check.Tickets.CountAsync(t => t.Status == TicketStatus.Sold));
     }
@@ -191,15 +191,14 @@ public class TicketPurchaseServiceTests
     [Fact]
     public async Task A_short_second_tier_rolls_the_whole_purchase_back()
     {
-        await _fixture.ResetAsync();
         (Guid eventId, Guid ga, Guid vip) = await PublishedEventAsync(ga: 10, vip: 2);
 
-        await using TicketingDbContext db = _fixture.CreateDbContext();
+        await using TicketingDbContext db = fixture.CreateDbContext();
 
         await Assert.ThrowsAsync<InsufficientInventoryException>(
             () => NewService(db).PurchaseAsync(Buy(eventId, "key-1", (ga, 3), (vip, 5)), default));
 
-        await using TicketingDbContext check = _fixture.CreateDbContext();
+        await using TicketingDbContext check = fixture.CreateDbContext();
         Assert.Equal(0, await check.Purchases.CountAsync());
         Assert.Equal(0, await check.PurchaseItems.CountAsync());
         Assert.Equal(0, await check.Tickets.CountAsync(t => t.Status == TicketStatus.Sold));
@@ -208,12 +207,10 @@ public class TicketPurchaseServiceTests
     [Fact]
     public async Task Buying_from_a_draft_event_is_rejected()
     {
-        await _fixture.ResetAsync();
-
         Guid eventId;
         Guid ga;
 
-        await using (TicketingDbContext setup = _fixture.CreateDbContext())
+        await using (TicketingDbContext setup = fixture.CreateDbContext())
         {
             EventService events = new(setup);
             eventId = await events.CreateAsync(new CreateEventInput
@@ -230,7 +227,7 @@ public class TicketPurchaseServiceTests
             ga = (await setup.PricingTiers.SingleAsync(t => t.EventId == eventId)).Id;
         }
 
-        await using TicketingDbContext db = _fixture.CreateDbContext();
+        await using TicketingDbContext db = fixture.CreateDbContext();
         await Assert.ThrowsAsync<InvalidEventStateException>(
             () => NewService(db).PurchaseAsync(Buy(eventId, "key-1", (ga, 1)), default));
     }
@@ -238,11 +235,10 @@ public class TicketPurchaseServiceTests
     [Fact]
     public async Task A_tier_from_another_event_is_rejected()
     {
-        await _fixture.ResetAsync();
         (Guid first, _, _) = await PublishedEventAsync();
         (_, Guid otherGa, _) = await PublishedEventAsync();
 
-        await using TicketingDbContext db = _fixture.CreateDbContext();
+        await using TicketingDbContext db = fixture.CreateDbContext();
         await Assert.ThrowsAsync<PricingTierNotFoundException>(
             () => NewService(db).PurchaseAsync(Buy(first, "key-1", (otherGa, 1)), default));
     }

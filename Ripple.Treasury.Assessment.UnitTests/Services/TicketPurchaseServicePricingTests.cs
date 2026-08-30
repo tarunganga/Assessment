@@ -3,7 +3,7 @@ using Ripple.Treasury.Assessment.Infrastructure.Entities;
 using Ripple.Treasury.Assessment.Services.Exceptions;
 using Ripple.Treasury.Assessment.Services.Inputs;
 
-namespace Ripple.Treasury.Assessment.UnitTests;
+namespace Ripple.Treasury.Assessment.UnitTests.Services;
 
 public class TicketPurchaseServicePricingTests
 {

@@ -1,7 +1,7 @@
 using Ripple.Treasury.Assessment.Services;
 using Ripple.Treasury.Assessment.Services.Inputs;
 
-namespace Ripple.Treasury.Assessment.UnitTests;
+namespace Ripple.Treasury.Assessment.UnitTests.Services;
 
 public class TicketPurchaseServiceFingerprintTests
 {

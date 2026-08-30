@@ -29,15 +29,21 @@ public class Program
             throw new InvalidOperationException("TreasuryDb connection string is not configured.");
         }
         
+        // Add Infrastructure
         builder.Services.AddInfrastructure(connectString);
-        builder.Services.AddServices();
-
-        // Maps' domain exceptions to ProblemDetails responses
-        builder.Services.AddProblemDetailsErrorHandling();
+        
+        // Register Services
+        builder.Services.RegisterServices();
+        
+        // Add ProblemDetails
+        builder.Services.AddProblemDetails();
+        
+        // Add Exception Handler
+        builder.Services.AddExceptionHandler<ProblemDetailsExceptionHandler>();
 
         WebApplication app = builder.Build();
 
-        // Add Global Exception Handler
+        // Use Global Exception Handler
         app.UseExceptionHandler();
 
         // Configure the HTTP request pipeline.

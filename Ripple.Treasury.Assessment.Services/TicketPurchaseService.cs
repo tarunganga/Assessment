@@ -70,9 +70,7 @@ public class TicketPurchaseService(TicketingDbContext db) : ITicketPurchaseServi
         }
 
         // Get the event for which the purchase is being made
-        Event purchaseEvent = await db.Events
-                                  .FirstOrDefaultAsync(e => e.Id == input.EventId, cancellationToken)
-                              ?? throw new EventNotFoundException(input.EventId);
+        Event purchaseEvent = await LockEventAsync(input.EventId, cancellationToken);
 
         // Check if the event is published (i.e. ready for purchase)
         if (purchaseEvent.Status != EventStatus.Published)
@@ -243,5 +241,22 @@ public class TicketPurchaseService(TicketingDbContext db) : ITicketPurchaseServi
         }
 
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString())));
+    }
+
+    // FOR SHARE holds the event row for the rest of the transaction. It does not
+    // block other purchases, but it does block the FOR UPDATE that cancelling or
+    // updating an event takes - so the status the caller checks cannot change under it.
+    private async Task<Event> LockEventAsync(Guid eventId, CancellationToken cancellationToken)
+    {
+        List<Event> rows = await db.Events
+            .FromSql($"SELECT * FROM events WHERE id = {eventId} FOR SHARE")
+            .ToListAsync(cancellationToken);
+
+        if (rows.Count == 0)
+        {
+            throw new EventNotFoundException(eventId);
+        }
+
+        return rows[0];
     }
 }

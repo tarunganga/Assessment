@@ -8,6 +8,8 @@ FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 ARG BUILD_CONFIGURATION=Release
 WORKDIR /src
 COPY ["Ripple.Treasury.Assessment.Api/Ripple.Treasury.Assessment.Api.csproj", "Ripple.Treasury.Assessment.Api/"]
+COPY ["Ripple.Treasury.Assessment.Services/Ripple.Treasury.Assessment.Services.csproj", "Ripple.Treasury.Assessment.Services/"]
+COPY ["Ripple.Treasury.Assessment.Infrastructure/Ripple.Treasury.Assessment.Infrastructure.csproj", "Ripple.Treasury.Assessment.Infrastructure/"]
 RUN dotnet restore "Ripple.Treasury.Assessment.Api/Ripple.Treasury.Assessment.Api.csproj"
 COPY . .
 WORKDIR "/src/Ripple.Treasury.Assessment.Api"

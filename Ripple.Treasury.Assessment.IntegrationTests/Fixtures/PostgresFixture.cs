@@ -4,7 +4,7 @@ using Respawn;
 using Ripple.Treasury.Assessment.Infrastructure;
 using Testcontainers.PostgreSql;
 
-namespace Ripple.Treasury.Assessment.IntegrationTests;
+namespace Ripple.Treasury.Assessment.IntegrationTests.Fixtures;
 
 public class PostgresFixture : IAsyncLifetime
 {

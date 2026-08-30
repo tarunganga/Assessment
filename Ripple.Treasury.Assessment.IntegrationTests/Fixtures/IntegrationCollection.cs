@@ -1,4 +1,4 @@
-namespace Ripple.Treasury.Assessment.IntegrationTests;
+namespace Ripple.Treasury.Assessment.IntegrationTests.Fixtures;
 
 [CollectionDefinition(Name, DisableParallelization = true)]
 public class IntegrationCollection : ICollectionFixture<PostgresFixture>

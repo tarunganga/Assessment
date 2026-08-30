@@ -1,15 +1,27 @@
 using Microsoft.EntityFrameworkCore;
 using Ripple.Treasury.Assessment.Infrastructure;
 using Ripple.Treasury.Assessment.Infrastructure.Enums;
+using Ripple.Treasury.Assessment.IntegrationTests.Fixtures;
 using Ripple.Treasury.Assessment.Services.Inputs;
 using Ripple.Treasury.Assessment.Services.Exceptions;
 using Ripple.Treasury.Assessment.Services;
 
-namespace Ripple.Treasury.Assessment.IntegrationTests;
+namespace Ripple.Treasury.Assessment.IntegrationTests.Services;
 
 [Collection(IntegrationCollection.Name)]
-public class EventServiceTests(PostgresFixture fixture)
+public class EventServiceTests(PostgresFixture fixture) : IAsyncLifetime
 {
+    // xUnit builds the class once per test, so every test starts on an empty schema.
+    public async Task InitializeAsync()
+    {
+        await fixture.ResetAsync();
+    }
+
+    public Task DisposeAsync()
+    {
+        return Task.CompletedTask;
+    }
+
     private static CreateEventInput NewEvent(int ga = 60, int vip = 40)
     {
         return new CreateEventInput
@@ -21,8 +33,8 @@ public class EventServiceTests(PostgresFixture fixture)
             TotalCapacity = ga + vip,
             PricingTiers =
             [
-                new() { Name = "GA", PriceAmount = 50m, PriceCurrency = "USD", Allocation = ga },
-                new() { Name = "VIP", PriceAmount = 150m, PriceCurrency = "USD", Allocation = vip }
+                new PricingTierInput { Name = "GA", PriceAmount = 50m, PriceCurrency = "USD", Allocation = ga },
+                new PricingTierInput { Name = "VIP", PriceAmount = 150m, PriceCurrency = "USD", Allocation = vip }
             ]
         };
     }
@@ -35,7 +47,6 @@ public class EventServiceTests(PostgresFixture fixture)
     [Fact]
     public async Task Create_seeds_one_ticket_per_allocated_seat()
     {
-        await fixture.ResetAsync();
         await using TicketingDbContext db = fixture.CreateDbContext();
 
         Guid eventId = await NewService(db).CreateAsync(NewEvent(), default);
@@ -64,7 +75,6 @@ public class EventServiceTests(PostgresFixture fixture)
     [Fact]
     public async Task Create_rejects_allocations_that_do_not_sum_to_capacity()
     {
-        await fixture.ResetAsync();
         await using TicketingDbContext db = fixture.CreateDbContext();
 
         CreateEventInput input = NewEvent();
@@ -81,7 +91,6 @@ public class EventServiceTests(PostgresFixture fixture)
     [Fact]
     public async Task Publish_moves_draft_to_published_and_is_idempotent()
     {
-        await fixture.ResetAsync();
         await using TicketingDbContext db = fixture.CreateDbContext();
         EventService service = NewService(db);
 
@@ -96,7 +105,6 @@ public class EventServiceTests(PostgresFixture fixture)
     [Fact]
     public async Task Delete_hard_deletes_when_nothing_is_sold()
     {
-        await fixture.ResetAsync();
         await using TicketingDbContext db = fixture.CreateDbContext();
         EventService service = NewService(db);
 
@@ -112,7 +120,6 @@ public class EventServiceTests(PostgresFixture fixture)
     [Fact]
     public async Task Delete_cancels_instead_of_destroying_when_tickets_are_sold()
     {
-        await fixture.ResetAsync();
         await using TicketingDbContext db = fixture.CreateDbContext();
         EventService service = NewService(db);
 
@@ -130,7 +137,6 @@ public class EventServiceTests(PostgresFixture fixture)
     [Fact]
     public async Task Update_cannot_shrink_a_tier_below_what_is_already_sold()
     {
-        await fixture.ResetAsync();
         await using TicketingDbContext db = fixture.CreateDbContext();
         EventService service = NewService(db);
 
@@ -145,8 +151,8 @@ public class EventServiceTests(PostgresFixture fixture)
             TotalCapacity = 40,
             PricingTiers =
             [
-                new() { Name = "GA", PriceAmount = 50m, PriceCurrency = "USD", Allocation = 0 },
-                new() { Name = "VIP", PriceAmount = 150m, PriceCurrency = "USD", Allocation = 40 }
+                new PricingTierInput { Name = "GA", PriceAmount = 50m, PriceCurrency = "USD", Allocation = 0 },
+                new PricingTierInput { Name = "VIP", PriceAmount = 150m, PriceCurrency = "USD", Allocation = 40 }
             ]
         };
 
@@ -161,7 +167,6 @@ public class EventServiceTests(PostgresFixture fixture)
     [Fact]
     public async Task Update_grows_and_shrinks_inventory_to_match_allocation()
     {
-        await fixture.ResetAsync();
         await using TicketingDbContext db = fixture.CreateDbContext();
         EventService service = NewService(db);
 
@@ -175,8 +180,8 @@ public class EventServiceTests(PostgresFixture fixture)
             TotalCapacity = 110,
             PricingTiers =
             [
-                new() { Name = "GA", PriceAmount = 55m, PriceCurrency = "USD", Allocation = 90 },
-                new() { Name = "VIP", PriceAmount = 150m, PriceCurrency = "USD", Allocation = 20 }
+                new PricingTierInput { Name = "GA", PriceAmount = 55m, PriceCurrency = "USD", Allocation = 90 },
+                new PricingTierInput { Name = "VIP", PriceAmount = 150m, PriceCurrency = "USD", Allocation = 20 }
             ]
         };
 
@@ -200,7 +205,6 @@ public class EventServiceTests(PostgresFixture fixture)
     [Fact]
     public async Task Update_on_a_cancelled_event_is_rejected()
     {
-        await fixture.ResetAsync();
         await using TicketingDbContext db = fixture.CreateDbContext();
         EventService service = NewService(db);
 
@@ -217,8 +221,8 @@ public class EventServiceTests(PostgresFixture fixture)
                 TotalCapacity = 100,
                 PricingTiers =
                 [
-                    new() { Name = "GA", PriceAmount = 50m, PriceCurrency = "USD", Allocation = 60 },
-                    new() { Name = "VIP", PriceAmount = 150m, PriceCurrency = "USD", Allocation = 40 }
+                    new PricingTierInput { Name = "GA", PriceAmount = 50m, PriceCurrency = "USD", Allocation = 60 },
+                    new PricingTierInput { Name = "VIP", PriceAmount = 150m, PriceCurrency = "USD", Allocation = 40 }
                 ]
             }, default));
     }
@@ -226,7 +230,6 @@ public class EventServiceTests(PostgresFixture fixture)
     [Fact]
     public async Task Missing_event_throws_not_found()
     {
-        await fixture.ResetAsync();
         await using TicketingDbContext db = fixture.CreateDbContext();
 
         await Assert.ThrowsAsync<EventNotFoundException>(
@@ -236,8 +239,6 @@ public class EventServiceTests(PostgresFixture fixture)
     [Fact]
     public async Task Concurrent_updates_are_serialised_by_the_event_row_lock()
     {
-        await fixture.ResetAsync();
-
         Guid eventId;
         await using (TicketingDbContext seed = fixture.CreateDbContext())
         {
@@ -282,8 +283,8 @@ public class EventServiceTests(PostgresFixture fixture)
             TotalCapacity = 110,
             PricingTiers =
             [
-                new() { Name = "GA", PriceAmount = 50m, PriceCurrency = "USD", Allocation = 90 },
-                new() { Name = "VIP", PriceAmount = 150m, PriceCurrency = "USD", Allocation = 20 }
+                new PricingTierInput { Name = "GA", PriceAmount = 50m, PriceCurrency = "USD", Allocation = 90 },
+                new PricingTierInput { Name = "VIP", PriceAmount = 150m, PriceCurrency = "USD", Allocation = 20 }
             ]
         }, default);
 

@@ -5,7 +5,7 @@ purchasing, availability, and sales reporting.
 
 .NET 10 · ASP.NET Core (controllers) · EF Core 10 · PostgreSQL 18
 
-Everything in the brief is standard CRUD except one line — **prevent
+Everything in the requirement is standard CRUD except one line — **prevent
 overselling**. That is a rule spanning many rows that has to hold while lots of
 people buy at the same time, and the other choices here follow from it.
 
@@ -186,7 +186,6 @@ The database is the only part of the system that sees every buyer.
 |---|---|
 | A lock inside the app (`SemaphoreSlim`, `lock`) | Fine with one copy of the API running. Breaks as soon as you run two, because each copy has its own lock and neither knows about the other. Worst kind of bug: passes every test on your machine, then oversells in production |
 | Put purchases on a queue, one worker per event | This does work, and it is a real pattern. But one worker per event means one sale at a time again, and now there is a queue to run and message ordering to get right |
-| Distributed lock (Redis, etcd) | See below |
 
 Even if the API guarded it, the database would still have to. A retry, a script
 someone runs by hand, or a second service can all write to the tables without
@@ -498,39 +497,3 @@ Each time the line was put back and the suite run twice, to be sure it passes
 every time rather than most of the time. Same for the pure logic: changing
 `total += itemTotal` to `total =` and `allocation < sold` to `allocation < 0`
 fails four tests across both suites.
-
----
-
-## Evolving it
-
-**Cancelling a purchase is not built yet.** `PurchaseStatus.Cancelled` exists and
-the sales report already leaves those purchases out, but nothing sets it. Whoever
-adds that has to put the seats back too: `SellSql` only ever picks rows with
-`status = 'Available'`, so tickets left `Sold` on a cancelled purchase disappear
-from stock for good.
-
-**Scale.** All four locks are correct and fast up to a few thousand purchases a
-second on one PostgreSQL instance. Past that: read replicas for availability and
-reporting, which can be a little behind where the sale path cannot, then splitting
-`tickets` by `event_id`, since seats are only ever queried within one event.
-
-Once seats live on more than one database — or a second service can sell them — no
-single database sees every sale any more. That is the point where a distributed
-lock stops being redundant and becomes the thing that decides who goes first.
-
-**Seat counts in Redis.** The step past that, and how the big ticketing sites run
-a major onsale: hold the counts in memory, sell against those, and write the
-database behind it. It is much faster, and it is a real answer at that scale — but
-two systems then hold the same number and can drift apart, so it only pays once
-the traffic makes it necessary. The work is not the caching, it is deciding what
-happens when the two disagree, and making sure the database stays the version you
-would bill against.
-
-**Running it in production.** Structured logging is in place and every error
-response carries a `traceId`. Next would be OpenTelemetry traces around the sale
-path, and a metric comparing sale attempts to successes — a rising failure rate is
-the earliest sign an event is selling out.
-
-**Outbox.** As soon as something downstream needs to know a purchase happened — a
-confirmation email, analytics — an outbox table written in the same transaction
-keeps that message and the sale in step.

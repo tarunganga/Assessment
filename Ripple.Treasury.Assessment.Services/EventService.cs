@@ -27,6 +27,9 @@ public class EventService(TicketingDbContext db) : IEventService
         // Validate the event capacity
         ValidateEventCapacity(eventId, input.PricingTiers, input.TotalCapacity);
 
+        // Validate that every tier is priced in the same currency
+        ValidateSingleCurrency(eventId, input.PricingTiers);
+
         await using IDbContextTransaction transaction = await db.Database.BeginTransactionAsync(cancellationToken);
 
         Event newEvent = new()
@@ -77,6 +80,9 @@ public class EventService(TicketingDbContext db) : IEventService
     {
         // Validate the event capacity
         ValidateEventCapacity(eventId, input.PricingTiers, input.TotalCapacity);
+
+        // Validate that every tier is priced in the same currency
+        ValidateSingleCurrency(eventId, input.PricingTiers);
 
         await using IDbContextTransaction transaction = await db.Database.BeginTransactionAsync(cancellationToken);
 
@@ -327,8 +333,11 @@ public class EventService(TicketingDbContext db) : IEventService
                 TotalRevenue = db.Purchases
                     .Where(p => p.EventId == e.Id && p.Status == PurchaseStatus.Completed)
                     .Sum(p => (decimal?)p.TotalAmount) ?? 0m,
+                // Every tier shares one currency, but order it anyway so the answer
+                // does not depend on the planner for events stored before that was enforced.
                 Currency = db.PricingTiers
                     .Where(t => t.EventId == e.Id)
+                    .OrderBy(t => t.Id)
                     .Select(t => t.PriceCurrency)
                     .FirstOrDefault() ?? string.Empty,
                 PurchaseCount = db.Purchases.Count(p => p.EventId == e.Id && p.Status == PurchaseStatus.Completed)
@@ -351,8 +360,11 @@ public class EventService(TicketingDbContext db) : IEventService
                 Allocation = t.Allocation,
                 Sold = db.Tickets.Count(x => x.PricingTierId == t.Id && x.Status == TicketStatus.Sold),
                 Available = db.Tickets.Count(x => x.PricingTierId == t.Id && x.Status == TicketStatus.Available),
+                // Must match the Completed filter on TotalRevenue, or the tier
+                // breakdown will not add up to the event total.
                 Revenue = db.PurchaseItems
-                    .Where(i => i.PricingTierId == t.Id)
+                    .Where(i => i.PricingTierId == t.Id
+                                && i.Purchase!.Status == PurchaseStatus.Completed)
                     .Sum(i => (decimal?)i.ItemTotal) ?? 0m
             })
             .ToListAsync(cancellationToken);
@@ -369,6 +381,29 @@ public class EventService(TicketingDbContext db) : IEventService
         {
             throw new CapacityViolationException(
                 eventId, $"Tier allocations total {allocated} but capacity is {totalCapacity}.");
+        }
+    }
+
+    // An event reports one revenue total, so its tiers cannot disagree on the currency
+    // that total is denominated in.
+    public static void ValidateSingleCurrency(Guid eventId, IReadOnlyList<PricingTierInput> tiers)
+    {
+        string currency = string.Empty;
+
+        foreach (PricingTierInput tier in tiers)
+        {
+            if (currency.Length == 0)
+            {
+                currency = tier.PriceCurrency;
+                continue;
+            }
+
+            if (!string.Equals(currency, tier.PriceCurrency, StringComparison.Ordinal))
+            {
+                throw new CapacityViolationException(
+                    eventId,
+                    $"All pricing tiers must share a currency; found '{currency}' and '{tier.PriceCurrency}'.");
+            }
         }
     }
 
