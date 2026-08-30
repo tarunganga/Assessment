@@ -1,0 +1,35 @@
+name: ripple-treasury-local
+
+services:
+  postgres:
+    image: docker.io/library/postgres:18-alpine
+    container_name: ripple-treasury-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ripple_treasury}
+      POSTGRES_USER: ${POSTGRES_USER:-ripple}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ripple_local_dev}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      # $$ escapes for compose interpolation; the shell inside sees $POSTGRES_*.
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    command:
+      - "postgres"
+      - "-c"
+      - "max_connections=200"
+      - "-c"
+      - "log_lock_waits=on"
+      - "-c"
+      - "deadlock_timeout=1s"
+
+volumes:
+  postgres-data:
+    name: ripple-treasury-postgres-data

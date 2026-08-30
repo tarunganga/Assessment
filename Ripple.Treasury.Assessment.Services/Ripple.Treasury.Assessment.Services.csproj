@@ -7,6 +7,10 @@
     </PropertyGroup>
 
     <ItemGroup>
+        <ProjectReference Include="..\Ripple.Treasury.Assessment.Infrastructure\Ripple.Treasury.Assessment.Infrastructure.csproj" />
+    </ItemGroup>
+
+    <ItemGroup>
       <Folder Include="Extensions\" />
       <Folder Include="Services\" />
     </ItemGroup>
