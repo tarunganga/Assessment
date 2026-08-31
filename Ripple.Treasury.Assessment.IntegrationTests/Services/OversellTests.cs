@@ -138,14 +138,13 @@ public class OversellTests(PostgresFixture fixture) : IAsyncLifetime
             Allocation = Capacity
         });
 
-        for (int ordinal = 1; ordinal <= Capacity; ordinal++)
+        for (int seat = 1; seat <= Capacity; seat++)
         {
             db.Tickets.Add(new Ticket
             {
                 Id = Guid.CreateVersion7(),
                 EventId = eventId,
                 PricingTierId = tierId,
-                SeatOrdinal = ordinal,
                 Status = TicketStatus.Available
             });
         }

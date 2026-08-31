@@ -65,7 +65,7 @@ an empty `async` method (CS1998) is easy to introduce and easy to miss.
   the capacity guards) specifically so it unit tests without a database. Keep it that way
   when adding logic that does not need a query.
 - **Two statements have no LINQ equivalent** and are raw SQL inside the service that uses
-  them: the `SKIP LOCKED` sale and the bulk seat insert (`unnest(...) WITH ORDINALITY`).
+  them: the `SKIP LOCKED` sale and the bulk seat insert (`unnest(...)`).
 
 ### Locks
 
@@ -74,13 +74,20 @@ Four mechanisms, four different problems. Do not collapse them.
 | Protecting | How | Where |
 |---|---|---|
 | Selling tickets | `FOR UPDATE SKIP LOCKED` on ticket rows | `TicketPurchaseService.SellSql` |
-| Resizing / cancelling an event | `FOR UPDATE` on the event row | `EventService.LockEventAsync` |
-| A sale against a concurrent cancel | `FOR SHARE` on the event row | `TicketPurchaseService.LockEventAsync` |
+| Editing an event — repricing / resizing / cancelling | `FOR UPDATE` on the event row | `EventService.LockEventAsync` |
+| A sale against a concurrent edit | `FOR SHARE` on the event row | `TicketPurchaseService.LockEventAsync` |
 | Reusing an idempotency key | `pg_advisory_xact_lock` + unique constraint | `TicketPurchaseService.PurchaseAsync` |
 
 `FOR SHARE` does not conflict with itself, so concurrent buyers still never block each
 other — but it does conflict with the admin's `FOR UPDATE`, which is what stops a sale
-completing against an event being cancelled. Removing it reintroduces that race.
+completing against an event being edited. Removing it reintroduces that race.
+
+`UpdateAsync` takes that lock at the top, whatever the request changes — do not narrow it
+to requests that touch allocations. A sale reads tier prices *after* taking `FOR SHARE`
+and `ApplyPricing` copies them onto the purchase row, so an unlocked reprice would charge
+whichever price the read happened to catch. The same lock is also why the shrink in
+`ResizeTierAsync` can delete ticket rows without `SKIP LOCKED`: a sale can never be in
+flight beside it.
 
 The advisory lock must stay the `xact` (transaction-scoped) variant. The session variant
 survives on a pooled connection and breaks every later request that borrows it.

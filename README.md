@@ -241,20 +241,13 @@ It is cheaper and it works. We keep rows instead for three reasons:
 - **Rows can be pointed at one by one.** A seat can be assigned, transferred or
   refunded on its own. A counter only knows how many.
 
-The cost is real: a 50,000-seat event writes 50,000 rows up front, about 11 MB, in
-roughly 700 ms. That happens even for an event nobody publishes.
-
-**Also considered:** creating the rows on publish rather than on create. It saves
-that write for drafts nobody finishes, but then a tier either has rows or does
-not, and both update and publish have to handle each case.
-
 ### Selling tickets without overselling
 
 ```sql
 WITH selling AS (
     SELECT id FROM tickets
     WHERE pricing_tier_id = @tier_id AND status = 'Available'
-    ORDER BY seat_ordinal LIMIT @quantity
+    ORDER BY id LIMIT @quantity
     FOR UPDATE SKIP LOCKED
 )
 UPDATE tickets t SET status = 'Sold', purchase_id = @purchase_id, sold_at = now()
@@ -270,9 +263,6 @@ Getting back fewer rows than you asked for means the tier ran out. There is no
 count to check first, and no gap between checking and taking — the rows come back
 already sold.
 
-`ix_tickets_available` indexes only the unsold rows, in seat order, so the query
-reads them straight off the index without sorting. At 50,000 seats with 45,000
-sold: **3 page reads, 0.041 ms.**
 
 ### Resizing a tier: one at a time per event
 
@@ -280,31 +270,40 @@ Resizing a tier touches a lot of rows at once — counting what is sold, adding
 seats, removing unsold ones — so `EventService` locks the event row first and
 holds it until the change is done. One resize at a time per event.
 
-Without it, two people growing the same tier both read the same highest seat
-number and both try to add seats from there. There is a test for this: take the
-lock out and it fails with `23505 duplicate key value violates unique constraint
-"uq_tickets_tier_ordinal"`.
+Without it, two people growing the same tier both read the same seat count and
+both add the difference, leaving a tier with more seats than it is allocated.
+There is a test for this: take the lock out and it fails with `Tier 'VIP' had 20
+unsold tickets to release but only 0 were still unsold` — the two resizes race
+each other into the same rows.
 
 ### Four kinds of lock, four different problems
 
 | What is being protected | How |
 |---|---|
 | Selling tickets | `FOR UPDATE SKIP LOCKED` on the ticket rows |
-| Resizing or cancelling an event | `FOR UPDATE` on the event row |
-| A sale racing a cancellation | `FOR SHARE` on the event row |
+| Editing an event — repricing, resizing, cancelling | `FOR UPDATE` on the event row |
+| A sale racing an edit | `FOR SHARE` on the event row |
 | Reusing an idempotency key | `pg_advisory_xact_lock` on the key, plus a unique constraint |
 
 Each answers a different question. Buyers want *any* N seats, so they should never
-wait for each other. A resize needs the whole event to sit still, so it takes one
+wait for each other. An edit needs the whole event to sit still, so it takes one
 lock and holds it. An idempotency key has no row to lock yet, so the key itself is
 locked instead.
 
-The third goes with the second. A purchase checks the event is `Published` before
-selling, and that check is worth nothing if an admin can cancel the event in the
-gap between the check and the sale. `FOR SHARE` does not clash with itself, so
-buyers still never block each other, but it does clash with the `FOR UPDATE` that
-cancelling takes — so the two cannot slip past each other. Whichever finishes
-first, the other one sees it.
+The third goes with the second. A purchase checks the event is `Published`, then
+reads the tier prices it is about to charge — and both are worth nothing if an
+admin can change the event in the gap before the sale. `FOR SHARE` does not clash
+with itself, so buyers still never block each other, but it does clash with the
+`FOR UPDATE` that every event edit takes — so the two cannot slip past each other.
+Whichever finishes first, the other one sees it.
+
+Cancelling is the obvious case, but repricing is the one that costs money: the
+price a buyer pays is copied onto the purchase row by `ApplyPricing`, so a
+repricing that landed mid-sale would charge whichever price the read happened to
+catch. `UpdateAsync` takes the lock at the top, whatever the request changes,
+which is what keeps the quoted price and the committed price the same price. The
+cost is that any edit to an event — even one that only changes its venue — stops
+sales for that event until it commits.
 
 The advisory lock is the kind tied to the transaction, which Postgres lets go on
 commit or rollback. The other kind is tied to the session and has to be released
@@ -349,15 +348,6 @@ They carry what the caller needs. `InsufficientInventoryException` holds how man
 were asked for and how many are left, so the response can say "you asked for 20,
 there are 5" rather than "sold out".
 
-Responses use ProblemDetails. We do not make up `type` URIs: ASP.NET Core already
-supplies one per status, and a made-up URI that leads nowhere is worse than the
-standard one. The two 409s are told apart by their `title` and the extra fields
-they carry.
-
-Anything not on the list returns a generic message and logs the real one. Tested
-by planting a password in an exception message — it is absent from the response
-and present once in the log.
-
 ### Left out on purpose
 
 | Not used | Why |
@@ -374,16 +364,9 @@ and present once in the log.
   once fills the index in order instead of scattering writes through it. The ids
   are known before we talk to the database, so the whole object graph is built in
   memory before the transaction opens. `tickets` is the one table where `bigint`
-  would genuinely be cheaper; kept `uuid` to stay consistent, and the sale path
-  sorts by `seat_ordinal`, so the key order never matters where it counts.
-- **Statuses are `text` + CHECK, not database enums.** Slightly bigger rows, much
-  easier to change later, and maps cleanly to `HasConversion<string>()`.
-- **Seats are seeded one statement per tier**, using `unnest(@ids) WITH
-  ORDINALITY`. EF `AddRange` on 50k entities takes seconds and swamps the change
-  tracker.
-- **Health is split live / ready.** Liveness checks nothing outside the process,
-  so a database hiccup never makes the platform restart a process that is fine.
-  Readiness does check the database and returns 503 when it is down.
+  would genuinely be cheaper; kept `uuid` to stay consistent. The sale path sorts
+  by `id`, so v7's time ordering is doing real work there — it is what gives seats
+  a stable order without a column to maintain.
 - **Attributes on entities, fluent API only for what attributes cannot say** —
   CHECK constraints, partial and descending indexes, SQL defaults, enum
   conversion, delete behaviour.
@@ -482,18 +465,3 @@ The rest:
 | `A_purchase_waits_for_an_in_flight_cancellation_and_then_sees_it` | the purchase waits while the cancellation holds the event row, then fails once it goes through |
 | `A_cancellation_waits_for_an_in_flight_purchase` | the other way round: the delete waits behind a buyer holding `FOR SHARE` |
 | `Concurrent_buyers_do_not_block_each_other_on_the_event_row` | the event lock still does not put ordinary sales in a queue |
-
-A concurrency test that has never been seen to fail proves nothing, so each one
-was checked by taking out the thing it guards:
-
-| Taken out | Result |
-|---|---|
-| `FOR UPDATE SKIP LOCKED` | `Expected: 100, Actual: 200` — every seat sold twice |
-| `pg_advisory_xact_lock` | `23505 duplicate key ... uq_purchases_idempotency_key` — all 20 callers insert |
-| `FOR UPDATE` on the event row | `23505 duplicate key ... uq_tickets_tier_ordinal` — two grows seed the same seat numbers |
-| `FOR SHARE` on the event row | the purchase goes straight through, selling against an event being cancelled |
-
-Each time the line was put back and the suite run twice, to be sure it passes
-every time rather than most of the time. Same for the pure logic: changing
-`total += itemTotal` to `total =` and `allocation < sold` to `allocation < 0`
-fails four tests across both suites.

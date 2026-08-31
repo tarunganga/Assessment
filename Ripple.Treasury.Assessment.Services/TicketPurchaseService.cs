@@ -23,7 +23,7 @@ public class TicketPurchaseService(TicketingDbContext db) : ITicketPurchaseServi
             FROM tickets
             WHERE pricing_tier_id = {0}
               AND status = 'Available'
-            ORDER BY seat_ordinal
+            ORDER BY id
             LIMIT {1}
             FOR UPDATE SKIP LOCKED
         )
@@ -211,7 +211,7 @@ public class TicketPurchaseService(TicketingDbContext db) : ITicketPurchaseServi
                     .ToList(),
                 TicketIds = db.Tickets
                     .Where(t => t.PurchaseId == p.Id)
-                    .OrderBy(t => t.SeatOrdinal)
+                    .OrderBy(t => t.Id)
                     .Select(t => t.Id)
                     .ToList()
             })

@@ -57,16 +57,13 @@ public class EventServiceTests(PostgresFixture fixture) : IAsyncLifetime
         Assert.Equal(2, await check.PricingTiers.CountAsync(t => t.EventId == eventId));
         Assert.Equal(EventStatus.Draft, (await check.Events.SingleAsync(e => e.Id == eventId)).Status);
 
-        // ordinals are 1..allocation per tier, dense and unique
-        List<int> ga = await check.Tickets
+        // one row per allocated seat in the tier, no id reused
+        List<Guid> ga = await check.Tickets
             .Where(t => t.EventId == eventId && t.PricingTier!.Name == "GA")
-            .Select(t => t.SeatOrdinal)
-            .OrderBy(o => o)
+            .Select(t => t.Id)
             .ToListAsync();
 
         Assert.Equal(60, ga.Count);
-        Assert.Equal(1, ga[0]);
-        Assert.Equal(60, ga[59]);
         Assert.Equal(60, ga.Distinct().Count());
         Assert.All(await check.Tickets.Where(t => t.EventId == eventId).ToListAsync(),
             t => Assert.Equal(TicketStatus.Available, t.Status));
@@ -194,12 +191,64 @@ public class EventServiceTests(PostgresFixture fixture) : IAsyncLifetime
         Assert.Equal("Stadium", (await check.Events.SingleAsync(e => e.Id == eventId)).Venue);
         Assert.Equal(55m, (await check.PricingTiers.SingleAsync(t => t.Name == "GA")).PriceAmount);
 
-        // no duplicate ordinals introduced by the grow
-        List<int> ordinals = await check.Tickets
+        // no duplicate seats introduced by the grow
+        List<Guid> seats = await check.Tickets
             .Where(t => t.PricingTier!.Name == "GA")
-            .Select(t => t.SeatOrdinal)
+            .Select(t => t.Id)
             .ToListAsync();
-        Assert.Equal(90, ordinals.Distinct().Count());
+        Assert.Equal(90, seats.Distinct().Count());
+    }
+
+    [Fact]
+    public async Task Shrink_releases_the_seats_a_grow_added_before_the_original_ones()
+    {
+        await using TicketingDbContext db = fixture.CreateDbContext();
+        EventService service = NewService(db);
+
+        Guid eventId = await service.CreateAsync(NewEvent(), default);
+
+        List<Guid> original;
+
+        await using (TicketingDbContext before = fixture.CreateDbContext())
+        {
+            original = await before.Tickets
+                .Where(t => t.PricingTier!.Name == "GA")
+                .Select(t => t.Id)
+                .OrderBy(id => id)
+                .ToListAsync();
+        }
+
+        await service.UpdateAsync(eventId, Resize(90, 20), default);
+        await service.UpdateAsync(eventId, Resize(60, 40), default);
+
+        // The sale takes the lowest ids, so a shrink has to give back the highest.
+        // That only holds if PostgreSQL orders uuid v7 the way it was generated -
+        // this is the test that pins it.
+        await using TicketingDbContext check = fixture.CreateDbContext();
+        List<Guid> remaining = await check.Tickets
+            .Where(t => t.PricingTier!.Name == "GA")
+            .Select(t => t.Id)
+            .OrderBy(id => id)
+            .ToListAsync();
+
+        Assert.Equal(60, remaining.Count);
+        Assert.Equal(original, remaining);
+    }
+
+    private static UpdateEventInput Resize(int ga, int vip)
+    {
+        return new UpdateEventInput
+        {
+            Name = "Test Show",
+            Venue = "Arena",
+            StartsAtUtc = DateTimeOffset.UtcNow.AddDays(30),
+            TotalCapacity = ga + vip,
+            PricingTiers =
+            [
+                new PricingTierInput { Name = "GA", PriceAmount = 50m, PriceCurrency = "USD", Allocation = ga },
+                new PricingTierInput { Name = "VIP", PriceAmount = 150m, PriceCurrency = "USD", Allocation = vip }
+            ]
+        };
     }
 
     [Fact]
@@ -246,8 +295,8 @@ public class EventServiceTests(PostgresFixture fixture) : IAsyncLifetime
         }
 
         // Both callers grow GA from 60 to 90. Unserialised they each read the same
-        // highest ordinal and seed the same 30 ordinals, colliding on
-        // uq_tickets_tier_ordinal - or silently produce 120 seats.
+        // total of 60 and each seed 30 more, leaving 120 seats in a tier
+        // allocated 90.
         TaskCompletionSource start = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -263,11 +312,11 @@ public class EventServiceTests(PostgresFixture fixture) : IAsyncLifetime
         Assert.Equal(90, await check.Tickets.CountAsync(t => t.PricingTier!.Name == "GA"));
         Assert.Equal(110, await check.Tickets.CountAsync(t => t.EventId == eventId));
 
-        List<int> ordinals = await check.Tickets
+        List<Guid> seats = await check.Tickets
             .Where(t => t.PricingTier!.Name == "GA")
-            .Select(t => t.SeatOrdinal)
+            .Select(t => t.Id)
             .ToListAsync();
-        Assert.Equal(90, ordinals.Distinct().Count());
+        Assert.Equal(90, seats.Distinct().Count());
     }
 
     private async Task<bool> GrowAsync(Guid eventId, TaskCompletionSource start)

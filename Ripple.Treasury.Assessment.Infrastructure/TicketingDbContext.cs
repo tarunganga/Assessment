@@ -155,13 +155,8 @@ public sealed class TicketingDbContext(DbContextOptions<TicketingDbContext> opti
             .HasForeignKey(x => x.PurchaseId)
             .OnDelete(DeleteBehavior.Restrict);
 
-        entity.HasIndex(x => new { x.PricingTierId, x.SeatOrdinal }, "uq_tickets_tier_ordinal")
-            .IsUnique()
-            .HasDatabaseName("uq_tickets_tier_ordinal");
-
-        // Two indexes on the same columns: the named overload is required, or the
-        // second call reconfigures the first instead of adding an index.
-        entity.HasIndex(x => new { x.PricingTierId, x.SeatOrdinal }, "ix_tickets_available")
+        // Covers the sale: the unsold rows of a tier, in the order they are taken.
+        entity.HasIndex(x => new { x.PricingTierId, x.Id }, "ix_tickets_available")
             .HasDatabaseName("ix_tickets_available")
             .HasFilter("status = 'Available'");
 

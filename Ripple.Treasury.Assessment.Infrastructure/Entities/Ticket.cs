@@ -18,9 +18,6 @@ public class Ticket
     [Column("pricing_tier_id")]
     public Guid PricingTierId { get; set; }
 
-    [Column("seat_ordinal")]
-    public int SeatOrdinal { get; set; }
-
     [Column("status")]
     public TicketStatus Status { get; set; }
 

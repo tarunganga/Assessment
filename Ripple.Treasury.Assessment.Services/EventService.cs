@@ -14,9 +14,9 @@ public class EventService(TicketingDbContext db) : IEventService
     // One statement, however many seats. EF AddRange on 50k entities takes seconds.
     private const string CreateTicketsSql =
         """
-        INSERT INTO tickets (id, event_id, pricing_tier_id, seat_ordinal, status)
-        SELECT seed.id, {0}, {1}, {2} + seed.ordinal, 'Available'
-        FROM unnest({3}) WITH ORDINALITY AS seed(id, ordinal);
+        INSERT INTO tickets (id, event_id, pricing_tier_id, status)
+        SELECT seed.id, {0}, {1}, 'Available'
+        FROM unnest({2}) AS seed(id);
         """;
 
     public async Task<Guid> CreateAsync(CreateEventInput input, CancellationToken cancellationToken)
@@ -69,7 +69,7 @@ public class EventService(TicketingDbContext db) : IEventService
         // Loop through each pricing tier and create tickets
         foreach (PricingTier tier in tiers)
         {
-            await CreateTicketsAsync(eventId, tier.Id, NewTicketIds(tier.Allocation), 0, cancellationToken);
+            await CreateTicketsAsync(eventId, tier.Id, NewTicketIds(tier.Allocation), cancellationToken);
         }
 
         await transaction.CommitAsync(cancellationToken);
@@ -117,7 +117,7 @@ public class EventService(TicketingDbContext db) : IEventService
 
                 db.PricingTiers.Add(added);
                 await db.SaveChangesAsync(cancellationToken);
-                await CreateTicketsAsync(eventId, added.Id, NewTicketIds(tier.Allocation), 0, cancellationToken);
+                await CreateTicketsAsync(eventId, added.Id, NewTicketIds(tier.Allocation), cancellationToken);
                 continue;
             }
 
@@ -467,12 +467,8 @@ public class EventService(TicketingDbContext db) : IEventService
 
         if (target.Allocation > total)
         {
-            int highestOrdinal = await db.Tickets
-                .Where(t => t.PricingTierId == current.Id)
-                .MaxAsync(t => (int?)t.SeatOrdinal, cancellationToken) ?? 0;
-
             await CreateTicketsAsync(
-                eventId, current.Id, NewTicketIds(target.Allocation - total), highestOrdinal, cancellationToken);
+                eventId, current.Id, NewTicketIds(target.Allocation - total), cancellationToken);
             return;
         }
 
@@ -480,20 +476,16 @@ public class EventService(TicketingDbContext db) : IEventService
         {
             int excess = total - target.Allocation;
 
-            // Highest ordinals first, so the seats a buyer would get next are the
-            // last to go. Ordinals may end up with gaps; the count is what matters.
-            List<Guid> release = await db.Tickets
+            // Newest ids first. The sale takes the lowest ids, so the seats a buyer
+            // would get next are the last to go. Only the count has to come out right.
+            IQueryable<Guid> newest = db.Tickets
                 .Where(t => t.PricingTierId == current.Id && t.Status == TicketStatus.Available)
-                .OrderByDescending(t => t.SeatOrdinal)
+                .OrderByDescending(t => t.Id)
                 .Take(excess)
-                .Select(t => t.Id)
-                .ToListAsync(cancellationToken);
-
-            // Status is re-checked in the delete itself. The event row lock keeps other
-            // updates out, but a sale never touches that row, so one can commit
-            // between the read above and this delete.
+                .Select(t => t.Id);
+            
             int deleted = await db.Tickets
-                .Where(t => release.Contains(t.Id) && t.Status == TicketStatus.Available)
+                .Where(t => t.Status == TicketStatus.Available && newest.Contains(t.Id))
                 .ExecuteDeleteAsync(cancellationToken);
 
             if (deleted != excess)
@@ -543,7 +535,6 @@ public class EventService(TicketingDbContext db) : IEventService
         Guid eventId,
         Guid pricingTierId,
         List<Guid> ticketIds,
-        int ordinalOffset,
         CancellationToken cancellationToken)
     {
         if (ticketIds.Count == 0)
@@ -553,7 +544,7 @@ public class EventService(TicketingDbContext db) : IEventService
 
         await db.Database.ExecuteSqlRawAsync(
             CreateTicketsSql,
-            [eventId, pricingTierId, ordinalOffset, ticketIds.ToArray()],
+            [eventId, pricingTierId, ticketIds.ToArray()],
             cancellationToken);
     }
 
